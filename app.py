@@ -30,9 +30,12 @@ LANGUAGES = {
 }
 
 PHRASES = {
-    "hi": {"intro": "आपका बिल तैयार है।", "total": "कुल", "rupees": "रुपये"},
-    "ml": {"intro": "നിങ്ങളുടെ ബിൽ തയ്യാറാണ്.", "total": "ആകെ", "rupees": "രൂപ"},
-    "ta": {"intro": "உங்கள் பில் தயார்.", "total": "மொத்தம்", "rupees": "ரூபாய்"},
+    "hi": {"intro": "आपका बिल तैयार है।", "total": "कुल", "rupees": "रुपये",
+           "unavailable": "उपलब्ध नहीं है"},
+    "ml": {"intro": "നിങ്ങളുടെ ബിൽ തയ്യാറാണ്.", "total": "ആകെ", "rupees": "രൂപ",
+           "unavailable": "ലഭ്യമല്ല"},
+    "ta": {"intro": "உங்கள் பில் தயார்.", "total": "மொத்தம்", "rupees": "ரூபாய்",
+           "unavailable": "கிடைக்கவில்லை"},
 }
 
 UNIT_SPOKEN = {"kg": "kilo", "litre": "litre", "packet": "packet", "piece": "piece"}
@@ -64,13 +67,15 @@ def qty_words(q):
     return str(q)
 
 
-def spoken_bill(items, total, group):
+def spoken_bill(items, total, group, unavailable=None):
     """Numbers are written as words, as Gnani's docs recommend for TTS."""
     p = PHRASES[group]
     parts = [p["intro"]]
     for i in items:
         unit = UNIT_SPOKEN.get(i["Unit"], i["Unit"])
         parts.append(f"{i['Item']}, {qty_words(i['Qty'])} {unit}.")
+    for u in (unavailable or []):
+        parts.append(f"{u} {p['unavailable']}.")
     parts.append(f"{p['total']} {int_words(int(round(total)))} {p['rupees']}.")
     return " ".join(parts)
 
@@ -85,13 +90,17 @@ def bill_csv(items, total):
     return buf.getvalue().encode("utf-8-sig")  # utf-8-sig so Excel shows it correctly
 
 
-def bill_html(items, total, transcript):
+def bill_html(items, total, transcript, unavailable=None):
     now = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
     rows = "".join(
         f"<tr><td>{html.escape(str(i['Item']))}</td><td>{i['Qty']} {html.escape(i['Unit'])}</td>"
         f"<td class='r'>{i['Rate (Rs)']}</td><td class='r'>{i['Amount (Rs)']:.2f}</td></tr>"
         for i in items
     )
+    na_html = ""
+    if unavailable:
+        na_list = ", ".join(html.escape(u) for u in unavailable)
+        na_html = f"<div class='na'>Not available: {na_list}</div>"
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Bill</title>
 <style>
@@ -101,6 +110,7 @@ table{{width:100%;border-collapse:collapse}}
 th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}
 .r{{text-align:right}} .total td{{font-weight:bold;font-size:18px;border-top:2px solid #222}}
 .said{{margin-top:18px;font-size:13px;color:#555}}
+.na{{margin-top:14px;font-size:14px;color:#b00020}}
 </style></head><body>
 <h1>🛒 Padosi Bill</h1>
 <div class="sub">{now}</div>
@@ -109,9 +119,21 @@ th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}
 {rows}
 <tr class="total"><td colspan="3">Total</td><td class="r">Rs {total:,.2f}</td></tr>
 </table>
+{na_html}
 <div class="said">Order heard: {html.escape(transcript)}</div>
 <div class="said">Made with Gnani Prisma (speech to text) and Gnani Timbre (text to speech).</div>
 </body></html>""".encode("utf-8")
+
+
+def get_default_key():
+    """Environment variable first, then Streamlit secrets (if configured)."""
+    key = os.getenv("GNANI_API_KEY", "")
+    if key:
+        return key
+    try:
+        return st.secrets.get("GNANI_API_KEY", "")
+    except Exception:
+        return ""
 
 
 st.set_page_config(page_title="Padosi Voice Order Taker", page_icon="🛒")
@@ -119,7 +141,7 @@ st.title("🛒 Padosi Voice Order Taker")
 st.caption("Speak your order in your language. Gnani Prisma listens, Gnani Timbre reads the bill back.")
 
 api_key = st.sidebar.text_input("Gnani API key", type="password",
-                                value=os.getenv("GNANI_API_KEY", ""))
+                                value=get_default_key())
 voice = st.sidebar.selectbox("Timbre voice", VOICES)
 
 lang_label = st.selectbox("Language", list(LANGUAGES.keys()))
@@ -139,63 +161,77 @@ if audio and api_key:
             data["model"] = cfg["model"]
         if cfg["format"]:
             data["format"] = cfg["format"]
-        with st.spinner("Transcribing..."):
-            r = requests.post(
-                STT_URL,
-                headers={"X-API-Key-ID": api_key},
-                files={"audio_file": ("order.wav", audio_bytes, "audio/wav")},
-                data=data,
-                timeout=60,
-            )
+
         st.session_state["stt_sig"] = sig
         st.session_state.pop("tts_audio", None)
-        if r.status_code != 200:
-            st.session_state["stt_error"] = f"Gnani API error {r.status_code}: {r.text}"
+        try:
+            with st.spinner("Transcribing..."):
+                r = requests.post(
+                    STT_URL,
+                    headers={"X-API-Key-ID": api_key},
+                    files={"audio_file": ("order.wav", audio_bytes, "audio/wav")},
+                    data=data,
+                    timeout=60,
+                )
+            if r.status_code != 200:
+                st.session_state["stt_error"] = f"Gnani API error {r.status_code}: {r.text}"
+                st.session_state["stt_body"] = None
+            else:
+                st.session_state["stt_error"] = None
+                st.session_state["stt_body"] = r.json()
+        except (requests.RequestException, ValueError) as e:
+            st.session_state["stt_error"] = f"Could not get a response from Gnani: {e}"
             st.session_state["stt_body"] = None
-        else:
-            st.session_state["stt_error"] = None
-            st.session_state["stt_body"] = r.json()
 
     if st.session_state.get("stt_error"):
         st.error(st.session_state["stt_error"])
     else:
-        body = st.session_state["stt_body"]
-        transcript = body.get("transcript", "")
+        body = st.session_state["stt_body"] or {}
+        transcript = body.get("transcript") or ""
         st.subheader("You said")
         st.write(transcript if transcript else "(no speech detected)")
 
-        items, unknown = parse_order(transcript)
+        items, unavailable = parse_order(transcript)
+
         if items:
             total = sum(i["Amount (Rs)"] for i in items)
             st.subheader("Your bill")
             st.table(items)
             st.metric("Total", f"Rs {total:,.2f}")
 
+        # Products that are not in the catalog
+        for u in unavailable:
+            st.error(f"❌ Sorry, \"{u}\" is not available in our store.")
+
+        if items:
             # ---- Timbre: read the bill aloud ----
             if st.button("🔊 Read bill aloud"):
-                spoken = spoken_bill(items, total, cfg["group"])
-                with st.spinner("Timbre is speaking..."):
-                    tr = requests.post(
-                        TTS_URL,
-                        headers={"Content-Type": "application/json",
-                                 "X-API-Key-ID": api_key},
-                        json={
-                            "text": spoken,
-                            "voice": voice,
-                            "model": "timbre-v3.0",
-                            "language": "auto",
-                            "speed": 1.0,
-                            "audio_config": {"sample_rate": 24000, "num_channels": 1,
-                                             "sample_width": 2, "encoding": "linear_pcm",
-                                             "container": "wav"},
-                        },
-                        timeout=60,
-                    )
-                if tr.status_code == 200:
-                    st.session_state["tts_audio"] = tr.content
-                    st.session_state["tts_text"] = spoken
-                else:
-                    st.error(f"Timbre error {tr.status_code}: {tr.text}")
+                spoken = spoken_bill(items, total, cfg["group"], unavailable)
+                try:
+                    with st.spinner("Timbre is speaking..."):
+                        tr = requests.post(
+                            TTS_URL,
+                            headers={"Content-Type": "application/json",
+                                     "X-API-Key-ID": api_key},
+                            json={
+                                "text": spoken,
+                                "voice": voice,
+                                "model": "timbre-v3.0",
+                                "language": "auto",
+                                "speed": 1.0,
+                                "audio_config": {"sample_rate": 24000, "num_channels": 1,
+                                                 "sample_width": 2, "encoding": "linear_pcm",
+                                                 "container": "wav"},
+                            },
+                            timeout=60,
+                        )
+                    if tr.status_code == 200:
+                        st.session_state["tts_audio"] = tr.content
+                        st.session_state["tts_text"] = spoken
+                    else:
+                        st.error(f"Timbre error {tr.status_code}: {tr.text}")
+                except requests.RequestException as e:
+                    st.error(f"Could not reach Timbre: {e}")
 
             if st.session_state.get("tts_audio"):
                 st.audio(st.session_state["tts_audio"], format="audio/wav")
@@ -206,17 +242,15 @@ if audio and api_key:
             st.subheader("Download")
             c1, c2, c3 = st.columns(3)
             c1.download_button("📄 Bill (HTML / print as PDF)",
-                               bill_html(items, total, transcript),
+                               bill_html(items, total, transcript, unavailable),
                                file_name="bill.html", mime="text/html")
             c2.download_button("📊 Bill (CSV)", bill_csv(items, total),
                                file_name="bill.csv", mime="text/csv")
             if st.session_state.get("tts_audio"):
                 c3.download_button("🔊 Spoken bill (WAV)", st.session_state["tts_audio"],
                                    file_name="bill_audio.wav", mime="audio/wav")
-        elif transcript:
-            st.warning("I heard you, but found no items from the catalog.")
-        for u in unknown:
-            st.warning(f"Couldn't find this item in the catalog: {u}")
+        elif transcript and not unavailable:
+            st.warning("I heard you, but couldn't find any items. Please try again.")
 
         with st.expander("Debug: raw API response"):
             st.json(body)

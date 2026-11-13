@@ -61,6 +61,18 @@ NUMBER_WORDS = {
 DOZEN_WORDS = ["दर्जन", "डज़न", "डजन", "dozen", "darjan", "dazan",
                "ഡസൻ", "ഡസന്‍", "டஜன்", "டசன்"]
 
+# Words that are NOT products: units and polite / connecting words
+UNIT_WORDS = ["kilo", "kg", "kilogram", "gram", "gm", "litre", "liter", "ltr",
+              "packet", "pkt", "piece", "pieces", "pcs",
+              "किलो", "ग्राम", "लीटर", "पैकेट", "पीस",
+              "കിലോ", "ഗ്രാം", "ലിറ്റർ", "പാക്കറ്റ്",
+              "கிலோ", "கிராம்", "லிட்டர்", "பாக்கெட்"]
+
+FILLER_WORDS = ["aur", "और", "dena", "dijiye", "chahiye", "de", "please", "bhi",
+                "देना", "दीजिए", "चाहिए", "भी",
+                "venam", "tharu", "tharamo", "വേണം", "തരൂ", "ദയവായി",
+                "வேண்டும்", "கொடுங்கள்", "தாங்க", "மற்றும்"]
+
 # ---- lookup tables built once ----
 LATIN_ALIASES = {}   # latin alias -> item
 STEM_ALIASES = []    # (native-script stem, item)
@@ -95,13 +107,24 @@ def find_item(tok):
 
 
 def clean_tokens(text):
-    text = text.replace("चाय पत्ती", "चायपत्ती")
+    text = (text or "").replace("चाय पत्ती", "चायपत्ती")
     tokens = []
     for t in text.split():
         t = t.strip(",।.!?").lower()
         if t:
             tokens.append(t)
     return tokens
+
+
+def _matches(tok, words):
+    # native script: allow suffixes (e.g. കിലോയും); latin: exact match
+    if tok.isascii():
+        return tok in words
+    return any(tok.startswith(w) for w in words)
+
+
+def _is_number(tok):
+    return bool(re.fullmatch(r"\d+(\.\d+)?", tok)) or tok in NUMBER_WORDS
 
 
 def quantity_from(tokens):
@@ -115,37 +138,54 @@ def quantity_from(tokens):
 
 
 def parse_order(text):
-    """Returns (items, unknown_parts). Works for all supported languages."""
+    """Returns (items, unavailable).
+    items       = products found in the catalog
+    unavailable = products the customer asked for that are NOT in the catalog
+    """
     tokens = clean_tokens(text)
-    items, pending = [], []
+    items, unavailable = [], []
+    qty_tokens, junk = [], []
+
+    def flush_junk():
+        nonlocal junk
+        if junk:
+            unavailable.append(" ".join(junk))
+            junk = []
 
     for tok in tokens:
-        name = find_item(tok)
-        if name:
-            price, unit, _ = CATALOG[name]
-            qty, _ = quantity_from(pending)
-            if unit == "piece" and any(d in pending for d in DOZEN_WORDS):
-                qty *= 12
-            qty = int(qty) if qty == int(qty) else qty
-            items.append({"Item": name, "Qty": qty, "Unit": unit,
-                          "Rate (Rs)": price,
-                          "Amount (Rs)": round(qty * price, 2)})
-            pending = []
+        if _is_number(tok) or _matches(tok, DOZEN_WORDS):
+            if junk:                       # previous product was not recognised
+                flush_junk()
+                qty_tokens = []
+            qty_tokens.append(tok)
+        elif _matches(tok, UNIT_WORDS):
+            qty_tokens.append(tok)
+        elif _matches(tok, FILLER_WORDS):
+            flush_junk()                   # "chocolate aur ..." -> chocolate unavailable
         else:
-            pending.append(tok)
+            name = find_item(tok)
+            if name:
+                price, unit, _ = CATALOG[name]
+                qty, _ = quantity_from(qty_tokens)
+                if unit == "piece" and any(_matches(t, DOZEN_WORDS) for t in qty_tokens):
+                    qty *= 12
+                qty = int(qty) if qty == int(qty) else qty
+                items.append({"Item": name, "Qty": qty, "Unit": unit,
+                              "Rate (Rs)": price,
+                              "Amount (Rs)": round(qty * price, 2)})
+                qty_tokens, junk = [], []  # junk before an item = brand word (e.g. "Amul")
+            else:
+                junk.append(tok)
 
-    unknown = []
-    if pending:
-        _, has_number = quantity_from(pending)
-        if has_number:
-            unknown.append(" ".join(pending))
-    return items, unknown
+    flush_junk()
+    return items, unavailable
 
 
 if __name__ == "__main__":
     tests = [
         "2 किलो आटा एक किलो तिल 2 डज़न अंडा",                # Hindi
         "do kilo chawal aur ek Amul butter dena",             # Hinglish
+        "do kilo chocolate aur ek kilo chawal",               # Hinglish, unavailable item
         "രണ്ട് കിലോ അരിയും ഒരു ലിറ്റർ എണ്ണയും ഒരു ഡസൻ മുട്ടയും",  # Malayalam
         "randu kilo ari, oru litre enna, onnara dozen mutta", # Manglish
         "இரண்டு கிலோ அரிசி ஒரு லிட்டர் எண்ணெய் ஒரு டஜன் முட்டை",  # Tamil
