@@ -1,8 +1,8 @@
-# 🛒 Kirana Voice Order Taker
+# 🛒 Padosi Voice Order Taker
 
 **Speak your order. Get the bill. Hear it read back. In five Indian languages.**
 
-A small web app for neighbourhood kirana stores. A shopkeeper or customer speaks an order such as *"do kilo chawal aur ek Amul butter dena"*. The app transcribes it, turns it into an itemised bill, reads the bill back aloud, and lets you download it.
+A small web app for neighbourhood Padosi stores. A shopkeeper or customer speaks an order such as *"do kilo chawal aur ek Amul butter dena"*. The app transcribes it, turns it into an itemised bill, reads the bill back aloud, and lets you download it.
 
 Built for the **Great Indian AI Internship Challenge** by Gnani AI.
 `#GnaniAI` `#GreatIndianAIInternshipChallenge`
@@ -13,7 +13,7 @@ Built for the **Great Indian AI Internship Challenge** by Gnani AI.
 
 ## The problem
 
-Many kirana orders are still given by voice, in the language the customer is comfortable with, often mixing languages mid-sentence. Orders are noted by hand or remembered, which leads to mistakes, slow billing and no written record. Most billing tools expect typing and English item names.
+Many Padosi orders are still given by voice, in the language the customer is comfortable with, often mixing languages mid-sentence. Orders are noted by hand or remembered, which leads to mistakes, slow billing and no written record. Most billing tools expect typing and English item names.
 
 ## The solution
 
